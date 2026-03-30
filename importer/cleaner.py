@@ -2,11 +2,13 @@ from __future__ import annotations
 import io
 from pathlib import Path
 import pandas as pd
-from models.transaction import TransactionType
+from models.transaction import StandardTransaction, TransactionType
+from decimal import Decimal
 
 class ExpenseCleaner:
     ALIPAY_HEADER_KEYS = ["交易时间", "交易分类", "收/支", "金额"]
     WECHAT_HEADER_KEYS = ["交易时间", "交易类型", "收/支", "金额(元)"]
+    MANUAL_HEADER_KEYS = ["时间", "金额", "收/支", "分类", "交易对手", "备注"]
 
     def __init__(self):
         self.output_columns = [
@@ -54,8 +56,7 @@ class ExpenseCleaner:
         raise ValueError(f"解析支付宝失败: {path.name}; {last_error}")
 
     def normalize(self, platform: str, df: pd.DataFrame, source_file: str) -> pd.DataFrame:
-        # 定义不同平台的字段映射
-        all_mappings = {
+        mapping = {
             "wechat": {
                 "交易时间": "transaction_time", "交易类型": "category_raw", "交易对方": "counterparty",
                 "商品": "item", "收/支": "direction_raw", "金额(元)": "amount",
@@ -67,74 +68,35 @@ class ExpenseCleaner:
                 "对方账号": "counterparty_account", "商品说明": "item", "收/支": "direction_raw",
                 "金额": "amount", "收/付款方式": "pay_method", "交易状态": "status",
                 "交易订单号": "transaction_id", "商家订单号": "merchant_order_id", "备注": "note",
-            },
-            "manual": {
-                "时间": "transaction_time",
-                "分类": "category_raw",
-                "交易对手": "counterparty",
-                "备注": "item",
-                "收/支": "direction_raw",
-                "金额": "amount"
             }
-        }
-        
-        mapping = all_mappings.get(platform, {})
+        }[platform]
+
         out = df.rename(columns=mapping).copy()
-    
-        expected_columns = [
-            "transaction_time", "category_raw", "counterparty", 
-            "counterparty_account", "item", "direction_raw", 
-            "amount", "pay_method", "status", "transaction_id", 
-            "merchant_order_id", "note"
-        ]
-        for col in expected_columns:
+        for col in self.output_columns:
             if col not in out.columns:
-                out[col] = "" # 补全缺失列，初始值为空字符串
-
-        # 3. 过滤掉无效交易（现在 out["status"] 肯定存在了）
-        invalid_status = ["已关闭", "交易关闭", "支付失败", "交易失败", "解冻成功"]
-        out = out[~out["status"].astype(str).str.contains('|'.join(invalid_status))].copy()
-
-        # 4. 数据转换逻辑保持不变
+                out[col] = ""
+        
+        out = out[self.output_columns].copy()
         out["platform"] = platform
         out["source_file"] = source_file
-        
-        # 处理时间
         out["transaction_time"] = pd.to_datetime(out["transaction_time"], errors="coerce")
+        out["amount"] = pd.to_numeric(
+            out["amount"].astype(str).str.replace(",", "", regex=False).str.replace("¥", "", regex=False),
+            errors="coerce"
+        )
         
-        # 处理金额：去掉非数字符号（¥ 或 ,）
-        out["amount"] = out["amount"].astype(str).str.replace(r'[^\d.]', '', regex=True)
-        out["amount"] = pd.to_numeric(out["amount"], errors="coerce").fillna(0).abs()
-        
-        # 处理方向
         direction = out["direction_raw"].astype(str).str.strip()
-        direction_map = {"支出": "expense", "收入": "income", "不计收支": "neutral"}
-        out["direction"] = direction.map(direction_map).fillna("unknown")
+        out["direction"] = direction.map({"支出": "expense", "收入": "income", "不计收支": "neutral"}).fillna("unknown")
         
         return out[out["transaction_time"].notna()].sort_values("transaction_time")
 
     def process_all(self, input_dir: Path) -> pd.DataFrame:
-        """处理目录下所有账单"""
+        """一键处理目录下所有账单并返回 DataFrame"""
         files = self.find_input_files(input_dir)
         frames = []
         for file in files:
-            file_name_lower = file.name.lower()
-            
-            # --- 修复逻辑：优先根据文件名判断 ---
-            if "manual" in file_name_lower:
-                platform = "manual"
-                raw = self._parse_manual(file)  # 调用手动解析
-            elif file.suffix.lower() in {".xlsx", ".xls"}:
-                platform = "wechat"
-                raw = self._parse_wechat(file)
-            elif file.suffix.lower() == ".csv":
-                platform = "alipay"
-                raw = self._parse_alipay(file)
-            else:
-                print(f"跳过不支持的文件: {file.name}")
-                continue
-
-            # 统一清洗数据
+            platform = "wechat" if file.suffix.lower() in {".xlsx", ".xls"} else "alipay"
+            raw = self._parse_wechat(file) if platform == "wechat" else self._parse_alipay(file)
             cleaned = self.normalize(platform, raw, file.name)
             frames.append(cleaned)
         
@@ -145,9 +107,77 @@ class ExpenseCleaner:
         return result.sort_values("transaction_time")
     
     def _parse_manual(self, path: Path) -> pd.DataFrame:
-        """简单的 CSV 读取方法"""
-        try:
-            # 手动文件通常比较标准，直接读取
-            return pd.read_csv(path, encoding="utf-8-sig", dtype=str)
-        except Exception as e:
-            raise ValueError(f"读取手动账单失败: {path.name}; {e}")
+        """解析手动输入的 CSV 文件"""
+        # 手动文件建议使用 utf-8-sig 编码，这样 Excel 编辑后保存不会乱码
+        df = pd.read_csv(path, encoding="utf-8-sig", dtype=str)
+        
+        # 映射关系
+        mapping = {
+            "时间": "transaction_time",
+            "分类": "category_raw",
+            "交易对手": "counterparty",
+            "备注": "item",
+            "收/支": "direction_raw",
+            "金额": "amount"
+        }
+        
+        out = df.rename(columns=mapping).copy()
+        
+        # 补齐标准字段（缺失的补空字符串）
+        output_columns = [
+            "transaction_time", "category_raw", "counterparty", 
+            "counterparty_account", "item", "direction_raw", 
+            "amount", "pay_method", "status", "transaction_id", 
+            "merchant_order_id", "note"
+        ]
+        for col in output_columns:
+            if col not in out.columns:
+                out[col] = ""
+        
+        return out[output_columns]
+
+    def process_all(self, input_dir: Path) -> pd.DataFrame:
+        files = self.find_input_files(input_dir)
+        frames = []
+        for file in files:
+            # 逻辑：如果文件名包含 'manual'，则按手动格式解析
+            if "manual" in file.name.lower():
+                print(f"[MANUAL] 正在载入手动账单: {file.name}")
+                raw = self._parse_manual(file)
+                platform = "manual"
+            else:
+                platform, raw = self.detect_and_parse(file)
+            
+            cleaned = self.normalize(platform, raw, file.name)
+            frames.append(cleaned)
+        
+        if not frames: return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True).sort_values("transaction_time")
+
+def convert_to_models(df) -> list[StandardTransaction]:
+    ts_list = []
+    for _, row in df.iterrows():
+        # 强制去空格并转小写
+        raw_dir = str(row['direction']).strip().lower()
+        
+        if raw_dir == 'expense':
+            t_type = TransactionType.EXPENSE
+        elif raw_dir == 'income':
+            t_type = TransactionType.INCOME
+        elif raw_dir == 'neutral':
+            t_type = TransactionType.NEUTRAL
+        else:
+            t_type = TransactionType.UNKNOWN
+            
+        ts_list.append(StandardTransaction(
+            timestamp=row['transaction_time'],
+            amount=Decimal(str(row['amount'])),
+            trans_type=t_type,
+            category=row['category_raw'] or "未分类",
+            merchant=row['counterparty'],
+            item=row['item']
+        ))
+    return ts_list
+
+
+    
