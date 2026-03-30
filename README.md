@@ -1,1 +1,65 @@
-# -
+个人账单清洗与分析工具 (Personal Expense Analytics Tool)
+这是一个基于 Python 的自动化账单处理系统，能够自动读取、清洗来自 支付宝、微信支付 以及 手动记录 的账单数据，并生成多维度的财务分析报表。
+🌟 核心功能
+多平台适配：自动识别并解析支付宝 (CSV)、微信支付 (Excel) 的原始导出账单。
+手动记账支持：支持通过 manual_record.csv 补充现金交易或私下转账。
+自动化清洗：统一不同平台的字段名、货币格式、时间格式，过滤已关闭或失败的无效交易。
+多维度分析：
+描述性统计：收支总额、结余、笔均消费、单笔最高支出。
+诊断性分析：消费分类占比、核心商户支出排行。
+预测性分析：基于历史趋势的下月收支预测。
+规范性建议：基于财务状况生成的智能节流建议。
+模块化导出：自动生成 5 张标准统计报表（CSV），方便二次编辑或生成图表。
+📁 目录结构
+code
+Text
+my_bill_tool/
+├── data/                    # [输入] 存放原始账单文件 (alipay.csv, wechat.xlsx, manual_record.csv)
+├── analysis_reports/        # [输出] 存放生成的统计报表
+├── models/
+│   └── transaction.py       # 核心数据模型 (StandardTransaction)
+├── importer/
+│   └── cleaner.py           # 数据转换桥接逻辑
+├── expense_processor/
+│   └── cleaner.py           # 原始数据提取与标准化清洗
+├── analyzer/
+│   ├── engine.py            # 统计计算核心算法
+│   ├── reporter.py          # 报表生成管理器 (Pipeline)
+│   └── __init__.py          # 模块接口暴露
+├── all_transactions_cleaned.csv  # 汇总后的清洗明细 (全量数据)
+├── main.py                  # 项目入口
+└── requirements.txt         # 依赖清单
+🚀 快速开始
+1. 安装依赖
+确保你已安装 Python 3.9+，然后在终端运行：
+code
+Bash
+pip install pandas openpyxl
+2. 准备数据
+将你导出的账单文件放入 data/ 文件夹：
+支付宝：导出名为 alipay_record_...csv。
+微信：导出名为 微信支付账单_...xlsx。
+手动记录：创建 manual_record.csv（必须包含 manual 关键字）。
+手动账单格式示例：
+| 时间 | 金额 | 收/支 | 分类 | 交易对手 | 备注 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 2026-03-25 12:00 | 50.0 | 支出 | 餐饮 | 路边摊 | 午饭 |
+3. 运行分析
+在项目根目录下执行：
+code
+Bash
+python main.py
+📊 输出报表说明
+程序运行完成后，会在 analysis_reports/ 目录下生成以下文件：
+1_summary.csv：整体收支概览（总支出、总收入、净收益等）。
+2_categories.csv：各消费类别的金额、占比及交易频次。
+3_merchants.csv：支出金额最高的前 10 名交易对手。
+4_trends.csv：按月统计的收支波动趋势，包含对下个月的预测。
+5_advice.csv：针对当前消费习惯生成的财务改进建议。
+🛠️ 技术细节
+精度保证：内部计算全程使用 decimal.Decimal，避免浮点数运算误差。
+健壮性：自动处理缺失字段，兼容不同版本的账单格式，并支持多种编码（GBK/UTF-8）读取。
+模块化设计：清洗、分析、报告逻辑完全解耦，可轻松集成到 Web 端或 GUI 界面。
+⚠️ 注意事项
+编码问题：如果手动编辑 CSV 文件，请务必以 UTF-8 with BOM 编码保存，以防中文乱码。
+安全提示：本工具仅在本地处理数据，不涉及任何网络上传，请放心使用。
